@@ -77,15 +77,20 @@ def claim():
 
 
 def finish(run_id, token, result=None, error=None):
-    digest = hashlib.sha256(canonical(result)).hexdigest() if result is not None else None
+    # A failed verification must not publish a difference conclusion. When an
+    # error is present the result is ignored, so retrying the same case can
+    # never leave a second, contradictory copy of the evidence behind.
+    claimable = error is None and result is not None
+    digest = hashlib.sha256(canonical(result)).hexdigest() if claimable else None
     status = Status.FAILED if error else Status.COMPLETE
     with engine.begin() as conn:
         count = conn.execute(runs.update().where(runs.c.id == run_id,
                         runs.c.attempt_token == token, runs.c.status == Status.RUNNING)
-                        .values(status=status, finished_at=utc_time(), error=error)).rowcount
+                        .values(status=status, finished_at=utc_time(),
+                                error=str(error)[:500] if error else None)).rowcount
         if not count:
             return
-        if result is not None:
+        if claimable:
             conn.execute(evidence.insert().values(run_id=run_id, report=result, digest=digest))
         log(conn, 'worker', status.value, run_id)
 

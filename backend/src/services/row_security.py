@@ -5,6 +5,10 @@ from uuid import uuid4
 from sqlalchemy import text
 
 
+class VerificationError(RuntimeError):
+    """Raised when the restricted-role replay cannot produce trustworthy evidence."""
+
+
 def _check_sql_preconditions(conn):
     if int(conn.exec_driver_sql("SHOW server_version_num").scalar_one()) < 160000:
         raise ValueError("工单 RLS 验签需要 PostgreSQL 16 或更新版本。")
@@ -71,7 +75,8 @@ def _prepare_audit(conn, schema, roles, audit_at, orders, delegations):
         CREATE POLICY delegated_orders ON {orders_table} FOR SELECT TO {readers}
         USING (EXISTS (
             SELECT 1 FROM {delegation_table} AS delegation CROSS JOIN {clock_table} AS clock
-            WHERE delegation.zone = work_orders.zone
+            WHERE delegation.reader_role = current_user
+              AND delegation.zone = work_orders.zone
               AND delegation.utility = work_orders.utility
               AND delegation.valid_from <= clock.audit_at
               AND clock.audit_at < delegation.valid_until
@@ -106,7 +111,7 @@ def read_visible_orders(engine, audit_at, operator_ids, orders, delegations):
                            row_security_active(CAST(:delegation_table AS regclass)) AS delegations_rls
                 """), {"orders_table": orders_table, "delegation_table": delegation_table}).mappings().one()
                 if evidence["effective_role"] != role or not (evidence["orders_rls"] and evidence["delegations_rls"]):
-                    raise RuntimeError(f"人员 {operator_id} 的受限角色或 RLS 未生效，已终止验签。")
+                    raise VerificationError(f"人员 {operator_id} 的受限角色或 RLS 未生效，已终止验签。")
                 visible = conn.exec_driver_sql(f"SELECT order_id FROM {orders_table}").scalars()
                 readings[operator_id] = (evidence["effective_role"], set(visible))
         finally:

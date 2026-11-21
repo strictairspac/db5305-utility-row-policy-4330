@@ -3,8 +3,11 @@ from pathlib import Path
 from threading import Event, Thread
 from time import sleep
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from src.config.settings import ARTIFACTS, cache, engine
 from src.services.domain import solve
+from src.services.row_security import VerificationError
 from src.services.workflow import claim, finish
 
 HEARTBEAT = Path(ARTIFACTS) / 'worker-heartbeat'
@@ -32,8 +35,11 @@ def work():
             try:
                 result = solve(payload, engine)
                 finish(run_id, token, result=result)
-            except (ValueError, KeyError, TypeError) as exc:
+            except (ValueError, KeyError, TypeError, VerificationError) as exc:
                 finish(run_id, token, error=str(exc)[:500])
+            except SQLAlchemyError as exc:
+                logging.exception('Domain run failed: %s', run_id)
+                finish(run_id, token, error=f'数据库验签失败：{str(exc)[:480]}')
             except Exception:
                 logging.exception('Domain run failed: %s', run_id)
                 finish(run_id, token, error='后台执行失败，请检查输入或查看 worker 日志。')
